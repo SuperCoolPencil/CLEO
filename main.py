@@ -45,7 +45,28 @@ def authenticate():
                 token.write(creds.to_json())
         
     return creds
-    
+
+def extractText(parts, type):
+    for part in parts:
+        if part.get('mimeType') == 'text/plain':
+            data = part[type].get("data")
+
+            if data:
+                byte_code = base64.urlsafe_b64decode(data)
+                text = byte_code.decode("utf-8")
+                return text
+            
+    for part in parts:
+        if part.get('mimeType') == 'text/html':
+            data = part['body'].get('data')
+            if data:
+                byte_code = base64.urlsafe_b64decode(data)
+                html = byte_code.decode("utf-8")
+                soup = BeautifulSoup(html, 'html.parser')
+                return soup.get_text()
+            
+    return ''
+
 def getMail(creds):
 
     mails = []
@@ -54,7 +75,7 @@ def getMail(creds):
         service = build("gmail", "v1", credentials=creds)
 
         # TODO: Decide how many emails to fetch or what conditions they must satisfy
-        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], q = "newer_than:2d").execute()
+        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], q = "newer_than:2d", maxResults = 2).execute()
 
         messages = results.get('messages', [])
 
@@ -70,29 +91,13 @@ def getMail(creds):
                 if name == 'From':
                     mail['from'] = values['value']
 
+                elif name == 'Subject':
+                    mail['subject'] = values['value']
+
             parts = msg['payload']['parts']
 
-            for part in parts:
-                if part.get('mimeType') == 'text/plain':
-                    data = part['body'].get("data")
+            mail['body'] = extractText(parts, "body")
 
-                    if data:
-                        byte_code = base64.urlsafe_b64decode(data)
-                        text = byte_code.decode("utf-8")
-                        mail['body'] = text
-                        text_found = True
-            
-            if not text_found:
-                for part in parts:
-                    if part.get('mimeType') == 'text/html':
-                        data = part['body'].get('data')
-                        if data:
-                            byte_code = base64.urlsafe_b64decode(data)
-                            html = byte_code.decode("utf-8")
-                            soup = BeautifulSoup(html, 'html.parser')
-                            mail['body'] = soup.get_text()
-                            break
-            
             mails.append(mail)
 
 
@@ -109,4 +114,5 @@ if creds and creds.valid:
 
    for mail in mails:
        print(mail['from'])
+       print(mail['subject'])
        print(mail['body'])
