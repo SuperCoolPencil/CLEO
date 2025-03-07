@@ -49,6 +49,8 @@ def authenticate():
     return creds
 
 def extractText(parts, type):
+
+    # check for plain text
     for part in parts:
         if part.get('mimeType') == 'text/plain':
             data = part[type].get("data")
@@ -57,7 +59,8 @@ def extractText(parts, type):
                 byte_code = base64.urlsafe_b64decode(data)
                 text = byte_code.decode("utf-8")
                 return text
-            
+    
+    # parse html using beautiful soup 4
     for part in parts:
         if part.get('mimeType') == 'text/html':
             data = part['body'].get('data')
@@ -66,7 +69,8 @@ def extractText(parts, type):
                 html = byte_code.decode("utf-8")
                 soup = BeautifulSoup(html, 'html.parser')
                 return soup.get_text()
-            
+    
+    # nothing to do
     return ''
 
 def getMail(creds):
@@ -77,7 +81,7 @@ def getMail(creds):
         service = build("gmail", "v1", credentials=creds)
 
         # TODO: Decide how many emails to fetch or what conditions they must satisfy
-        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], maxResults = 20).execute()
+        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], maxResults = 1).execute()
 
         messages = results.get('messages', [])
 
@@ -88,18 +92,24 @@ def getMail(creds):
             msg = service.users().messages().get(userId = "me", id = message['id']).execute()
             email_data = msg['payload']['headers']
 
+            # extract from, subject, datetime from headers
             for values in email_data:
                 name = values['name']
+                print(name)
                 if name == 'From':
                     mail['from'] = values['value']
 
                 elif name == 'Subject':
                     mail['subject'] = values['value']
 
+                elif name == "Date":
+                    mail['datetime'] = values['value']
+
             parts = msg['payload']['parts']
 
             body = extractText(parts, "body")
 
+            # Doing it this way so I dont have to deal with escape characters
             mail['body'] = ' '.join(body.split())
 
             mails.append(mail)
@@ -112,6 +122,9 @@ def getMail(creds):
         print(f"An error occurred: {error}")
 
 def extractDates(mails):
+
+    # TODO: implement things like today, tommorow
+    # TODO: figure out how this is going to work with multi-day events and stuff
         
     regexes = [r'\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}', 
                r'\s\d{1,2}(?:th|st|nd|rd)?(?:[\s,]|(?:\sof\s))?(?:(?:[Jj]an(?:uary)?)|(?:[Ff]eb(?:ruary)?)|(?:[Mm]ar(?:ch)?)|(?:[Aa]pr(?:il)?)|(?:[Mm]ay)|(?:[Jj]un(?:e)?)|(?:[Jj]ul(?:y)?)|(?:[Aa]ug(?:ust)?)|(?:[Ss]ep(?:tember)?)|(?:[Oo]ct(?:ober)?)|(?:[Nn]ov(?:ember)?)|(?:[Dd]ec(?:ember)?)),?\s?(?:\d{4})?', 
@@ -126,14 +139,14 @@ def extractDates(mails):
             for result in re.findall(regex, mail['body']):
                 dates.append(result)
 
-        mail['dates'] = dates
+        mail['extracted dates'] = dates
 
 # Created a main function for better structure
 def main():
     creds = authenticate()
 
     if creds and creds.valid:
-
+        
         print("[~] User authenticated!")
         print("[o] Getting mail...")
 
@@ -148,7 +161,8 @@ def main():
             print(mail['from'])
             print(mail['subject'])
             print(mail['body'])
-            print(mail['dates'])
+            print(mail['extracted dates'])
+            print(mail['datetime'])
             print()
             print()
         
