@@ -12,7 +12,10 @@ CLEO is a command-line tool designed to streamline your inbox by reading your em
   - Fetching emails from Gmail using the Google API.
 
 - [x] **Date Extraction:**  
-  - handling various date formats (e.g., "Friday 7, 2025", "20 May 2024", "7/3/2024", "02/05/2025", and multi-date formats).
+  - handling various date formats (e.g., "Friday 7th", "20 May 2024", "7/3/2024", "02/05/2025").
+
+- [ ] **Multi-Date Events
+  - handling events that span multiple days (e.g., ")
 
 - [ ] **Event Title Extraction:**  
   - Capture event titles from email subjects and contextual clues in the body.

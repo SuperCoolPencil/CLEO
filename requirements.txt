@@ -4,3 +4,5 @@ google-auth-httplib2
 google-api-python-client
 beautifulsoup4
 dateparser
+termcolor
+tqdm

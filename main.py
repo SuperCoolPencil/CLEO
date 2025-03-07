@@ -8,6 +8,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import re
+from datetime import datetime,timedelta
+import sys
+from termcolor import colored
+from tqdm import tqdm
 
 print('''
     ░█████╗░██╗░░░░░███████╗░█████╗░
@@ -18,7 +22,10 @@ print('''
     ░╚════╝░╚══════╝╚══════╝░╚════╝░
 ''')
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar"
+]
 
 
 def authenticate():
@@ -48,7 +55,7 @@ def authenticate():
         
     return creds
 
-def extractText(parts, type):
+def getPart(parts, type):
 
     # check for plain text
     for part in parts:
@@ -73,7 +80,7 @@ def extractText(parts, type):
     # nothing to do
     return ''
 
-def getMail(creds):
+def getMail(creds, maxResults):
 
     mails = []
 
@@ -81,7 +88,7 @@ def getMail(creds):
         service = build("gmail", "v1", credentials=creds)
 
         # TODO: Decide how many emails to fetch or what conditions they must satisfy
-        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], maxResults = 1).execute()
+        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], maxResults = maxResults).execute()
 
         messages = results.get('messages', [])
 
@@ -95,7 +102,7 @@ def getMail(creds):
             # extract from, subject, datetime from headers
             for values in email_data:
                 name = values['name']
-                print(name)
+
                 if name == 'From':
                     mail['from'] = values['value']
 
@@ -103,11 +110,11 @@ def getMail(creds):
                     mail['subject'] = values['value']
 
                 elif name == "Date":
-                    mail['datetime'] = values['value']
+                    mail['when'] = values['value']
 
             parts = msg['payload']['parts']
 
-            body = extractText(parts, "body")
+            body = getPart(parts, "body").lower()
 
             # Doing it this way so I dont have to deal with escape characters
             mail['body'] = ' '.join(body.split())
@@ -121,50 +128,175 @@ def getMail(creds):
     except HttpError as error:
         print(f"An error occurred: {error}")
 
-def extractDates(mails):
+def extractDate(sentence, contextTime):
+
+    # context time is just time the mail was received. It is needed for relative dates 
 
     # TODO: implement things like today, tommorow
     # TODO: figure out how this is going to work with multi-day events and stuff
+    
+    results = []
+
+    relative_date_regex = r'\b(?:(?:today|tomorr?(?:ow|morow)|yesterday)|(?:(?:next|last|this|on)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)))\b'
+
+    results = re.findall(relative_date_regex, sentence)
+
+    if len(results) > 0:
+        # if we find relative dates, no need to find hardcoded dates
         
-    regexes = [r'\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}', 
-               r'\s\d{1,2}(?:th|st|nd|rd)?(?:[\s,]|(?:\sof\s))?(?:(?:[Jj]an(?:uary)?)|(?:[Ff]eb(?:ruary)?)|(?:[Mm]ar(?:ch)?)|(?:[Aa]pr(?:il)?)|(?:[Mm]ay)|(?:[Jj]un(?:e)?)|(?:[Jj]ul(?:y)?)|(?:[Aa]ug(?:ust)?)|(?:[Ss]ep(?:tember)?)|(?:[Oo]ct(?:ober)?)|(?:[Nn]ov(?:ember)?)|(?:[Dd]ec(?:ember)?)),?\s?(?:\d{4})?', 
-               r'(?:(?:[Jj]an(?:uary)?)|(?:[Ff]eb(?:ruary)?)|(?:[Mm]ar(?:ch)?)|(?:[Aa]pr(?:il)?)|(?:[Mm]ay)|(?:[Jj]un(?:e)?)|(?:[Jj]ul(?:y)?)|(?:[Aa]ug(?:ust)?)|(?:[Ss]ep(?:tember)?)|(?:[Oo]ct(?:ober)?)|(?:[Nn]ov(?:ember)?)|(?:[Dd]ec(?:ember)?))\s\d{1,2},?\s?(?:\d{4})?(?:\s|\.)']
+        for i in range(len(results)):
+            results[i] = datetime.now() - dateparser.parse(results[i]) + contextTime
+        
+        return results[0]
 
-    for mail in mails:
+    date_regexes = [
+        r'\b\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}\b', 
+        r'\b\d{1,2}(?:th|st|nd|rd)?(?:[\s,]+|(?:\s+of\s+))?(?:(?:jan(?:uary)?)|(?:feb(?:ruary)?)|(?:mar(?:ch)?)|(?:apr(?:il)?)|may|(?:jun(?:e)?)|(?:jul(?:y)?)|(?:aug(?:ust)?)|(?:sep(?:tember)?)|(?:oct(?:ober)?)|(?:nov(?:ember)?)|(?:dec(?:ember)?))\b,?\s*(?:\d{4})?\b', 
+        r'\b(?:(?:jan(?:uary)?)|(?:feb(?:ruary)?)|(?:mar(?:ch)?)|(?:apr(?:il)?)|may|(?:jun(?:e)?)|(?:jul(?:y)?)|(?:aug(?:ust)?)|(?:sep(?:tember)?)|(?:oct(?:ober)?)|(?:nov(?:ember)?)|(?:dec(?:ember)?))\s+\d{1,2},?\s*(?:\d{4})?(?:(?:\s)|\.)\b'
+    ]
 
-        dates = []
+    for regex in date_regexes:
             
-        for regex in regexes:
-            
-            for result in re.findall(regex, mail['body']):
-                dates.append(result)
+        results = re.findall(regex, sentence)
 
-        mail['extracted dates'] = dates
+        if len(results) > 0:
+
+            # we need to remove stuff like 'th' to make it play nice with datetime
+            return re.sub(r'(\d+)(st|nd|rd|th)(\s+of)?\s+', r'\1 ', results[0])
+        
+    return ''
+
+def extractTime(sentence):
+
+    time_regex = r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b'
+
+    results = re.findall(time_regex, sentence)
+
+    if len(results) > 0:
+
+        return results[0]
+    
+    return ''
+
+def extractDateHelper(sentence, contextTime):
+
+    # We can just work with a single sentence at a time and extract date and time
+
+    date = extractDate(sentence, contextTime)
+
+    if type(date) == type(datetime.now()):
+        date = date.strftime("%Y-%m-%d")
+
+    time = extractTime(sentence)
+
+    if date or time:
+        return date + ' ' + time
+    
+    return ''
+
+def normalize_date(date_list):
+
+    date_str = " ".join(date_list) if isinstance(date_list, list) else date_list
+    date_obj = dateparser.parse(date_str)
+    
+    # Convert to desired format (ISO 8601)
+    return date_obj if date_obj else None
+
+def extractDateTime(mails):
+
+    # TODO: FIX THIS MESS (it works tho...)
+
+    for mail in tqdm(mails):
+
+        date_format = "%a, %d %b %Y %H:%M:%S %z"
+
+        contextTime = datetime.strptime(mail['when'], date_format)
+
+        dt = []
+
+        for sentence in mail['body'].split('.'):
+
+            data = extractDateHelper(sentence, contextTime)
+
+            if data:
+
+                dt.append(data)
+        
+        mail['datetime'] = normalize_date(dt)
+
+        if not mail['datetime']:
+            # if nothing is found in body we could try looking at the subject
+            dt = extractDateHelper(mail['subject'].lower(), contextTime)
+            mail['datetime'] = normalize_date(dt)
+
+from datetime import timedelta  # Ensure you import timedelta
+
+def addEvent(creds, mail):
+    try:
+        service = build("calendar", "v3", credentials=creds)
+
+        event = {
+            'summary': mail['title'],
+            'description': mail['subject'] + '\n' + mail['body'],
+            'start': {
+                'dateTime': mail['datetime'].isoformat(),
+                'timeZone': 'Asia/Kolkata' 
+            },
+            'end': {
+                'dateTime': (mail['datetime'] + timedelta(hours=int(mail['duration']))).isoformat(),
+                'timeZone': 'Asia/Kolkata'
+            }
+        }
+
+        event = service.events().insert(calendarId='primary', body=event).execute()
+
+        return event.get('htmlLink')
+
+    except HttpError as error:
+        print(f"An error occurred: {error}")
+
 
 # Created a main function for better structure
 def main():
+
+    
+
+    maxResults = sys.argv[1] if len(sys.argv) > 1 else 5
+
     creds = authenticate()
 
     if creds and creds.valid:
-        
-        print("[~] User authenticated!")
+
+        print("[-] User authenticated!")
         print("[o] Getting mail...")
 
-        mails = getMail(creds)
+        mails = getMail(creds, maxResults)
 
         if len(mails) > 0:
             print("[~] Pulled mail from Gmail API!")
 
-        extractDates(mails)
+        print("[-] Extracting date and time...")
+        extractDateTime(mails)
+
+        # TODO: Extract event names
 
         for mail in mails:
-            print(mail['from'])
-            print(mail['subject'])
-            print(mail['body'])
-            print(mail['extracted dates'])
-            print(mail['datetime'])
-            print()
-            print()
+
+            if mail['datetime']:
+                
+                print(colored(mail['subject'], 'yellow'), colored(mail['datetime'], 'cyan'))
+
+                if input("Add event to calendar? [Y/n]: ") == 'n':
+                    continue
+                
+                print()
+                print(mail['body'])
+                mail['duration'] = input("Enter duration in hours: ")
+                mail['title'] = input("Enter event title: ")
+
+                addEvent(creds, mail)
+
+
         
         
 
