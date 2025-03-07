@@ -1,11 +1,13 @@
 import os.path
 import base64
 from bs4 import BeautifulSoup
+import dateparser
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import re
 
 print('''
     ░█████╗░██╗░░░░░███████╗░█████╗░
@@ -75,7 +77,7 @@ def getMail(creds):
         service = build("gmail", "v1", credentials=creds)
 
         # TODO: Decide how many emails to fetch or what conditions they must satisfy
-        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], q = "newer_than:2d", maxResults = 2).execute()
+        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], maxResults = 20).execute()
 
         messages = results.get('messages', [])
 
@@ -96,7 +98,9 @@ def getMail(creds):
 
             parts = msg['payload']['parts']
 
-            mail['body'] = extractText(parts, "body")
+            body = extractText(parts, "body")
+
+            mail['body'] = ' '.join(body.split())
 
             mails.append(mail)
 
@@ -107,12 +111,48 @@ def getMail(creds):
     except HttpError as error:
         print(f"An error occurred: {error}")
 
-creds = authenticate()
+def extractDates(mails):
+        
+    regexes = [r'\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}', 
+               r'\s\d{1,2}(?:th|st|nd|rd)?(?:[\s,]|(?:\sof\s))?(?:(?:[Jj]an(?:uary)?)|(?:[Ff]eb(?:ruary)?)|(?:[Mm]ar(?:ch)?)|(?:[Aa]pr(?:il)?)|(?:[Mm]ay)|(?:[Jj]un(?:e)?)|(?:[Jj]ul(?:y)?)|(?:[Aa]ug(?:ust)?)|(?:[Ss]ep(?:tember)?)|(?:[Oo]ct(?:ober)?)|(?:[Nn]ov(?:ember)?)|(?:[Dd]ec(?:ember)?)),?\s?(?:\d{4})?', 
+               r'(?:(?:[Jj]an(?:uary)?)|(?:[Ff]eb(?:ruary)?)|(?:[Mm]ar(?:ch)?)|(?:[Aa]pr(?:il)?)|(?:[Mm]ay)|(?:[Jj]un(?:e)?)|(?:[Jj]ul(?:y)?)|(?:[Aa]ug(?:ust)?)|(?:[Ss]ep(?:tember)?)|(?:[Oo]ct(?:ober)?)|(?:[Nn]ov(?:ember)?)|(?:[Dd]ec(?:ember)?))\s\d{1,2},?\s?(?:\d{4})?(?:\s|\.)']
 
-if creds and creds.valid:
-   mails = getMail(creds)
+    for mail in mails:
 
-   for mail in mails:
-       print(mail['from'])
-       print(mail['subject'])
-       print(mail['body'])
+        dates = []
+            
+        for regex in regexes:
+            
+            for result in re.findall(regex, mail['body']):
+                dates.append(result)
+
+        mail['dates'] = dates
+
+# Created a main function for better structure
+def main():
+    creds = authenticate()
+
+    if creds and creds.valid:
+
+        print("[~] User authenticated!")
+        print("[o] Getting mail...")
+
+        mails = getMail(creds)
+
+        if len(mails) > 0:
+            print("[~] Pulled mail from Gmail API!")
+
+        extractDates(mails)
+
+        for mail in mails:
+            print(mail['from'])
+            print(mail['subject'])
+            print(mail['body'])
+            print(mail['dates'])
+            print()
+            print()
+        
+        
+
+if __name__ == '__main__':
+    main()
