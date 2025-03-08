@@ -14,17 +14,18 @@ CLEO is a command-line tool designed to streamline your inbox by reading your em
 - [x] **Date Extraction:**  
   - handling various date formats (e.g., "Friday 7th", "20 May 2024", "7/3/2024", "02/05/2025").
 
+- [x] **Multi-Date Events**
+  - handling events that span multiple days
+
 - [x] **Calendar Syncing:**  
   - Automatically create and update Google Calendar events based on extracted email data.
-
-- [x] **Multi-Date Events**
-  - handling events that span multiple days (e.g., ")
 
 - [ ] **Event Title Extraction:**  
   - Capture event titles from email subjects and contextual clues in the body.
 
 - [ ] **Location Extraction:**  
-  - Detect internal room codes (e.g., "C7", "LG1") using custom regex or spaCy’s EntityRuler.
+  - Detect venues (street addresses), internal room codes (e.g., "C7", "LG1") using custom regex or spaCy’s EntityRuler.
+  - Explore integrating Google Maps API.
 
 - [ ] **Additional NLP Integration:**  
   - Experiment with a small LLM (e.g., DistilBERT) to enhance extraction of nuanced details.
@@ -32,7 +33,11 @@ CLEO is a command-line tool designed to streamline your inbox by reading your em
 - [ ] **User Interface Enhancements:**  
   - Expand CLI commands for summarizing emails, listing upcoming events, and manual syncing.
 
-- [ ] **Testing & Refinement:**  
-  - Continue refining extraction functions using a broader set of test emails, especially focusing on internal college formats.
+- [ ] **Web Application/Website:**
+
+  - Develop a web-based interface for CLEO to allow users to access its features through a browser.
+  - Create a user-friendly dashboard to view emails, event details, and calendar sync status.
+  - Integrate authentication, email fetching, and event creation in a responsive design.
+  - Include map integration for visualizing event locations.
 
 ### Stay Organized, Effortlessly with CLEO! 
