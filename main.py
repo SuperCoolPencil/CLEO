@@ -243,6 +243,20 @@ def extractDateTime(mails):
             mail['starttime'] = None
             mail['endtime'] = None
 
+def extractLocation(mails):
+
+    location_regex = r'\b(?:in|venue:?|at|location:?|where:?)(?:\s+the)?\s+([\w\s]{3,})\b'
+
+    for mail in mails:
+
+        match = re.search(location_regex, mail['body'])
+        if match:
+            # Clean up any potential extra whitespace
+            mail['location'] = match.group(1).strip()
+        else:
+            mail['location'] = None
+
+
 def addEvent(creds, mail):
     try:
         service = build("calendar", "v3", credentials=creds)
@@ -296,25 +310,35 @@ def main():
 
         mails = getMail(creds, maxResults)
 
-        if len(mails) > 0:
-            print("[~] Pulled mail from Gmail API!")
+        if len(mails) == 0:
+            print("[!] No mails fit current criteria")
+            return
+        
+        print("[~] Pulled mail from Gmail API!")
 
         print("[-] Extracting date and time...")
         extractDateTime(mails)
 
+        print("[~] Extracting location...")
+        extractLocation(mails)
+
+        addedEvents = []
         for mail in mails:
 
             if mail['startdate'] or mail['starttime']:
 
                 for key, value in mail.items():
-                    print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
+                    if value:
+                        print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
 
                 if input("Add to calendar? [Y/n]: ") == 'n':
                     continue
 
                 # TODO: Extract event names
                 mail['title'] =    input("Enter Event Name: ")
-                mail['location'] = input("Enter Event Location: ")
+
+                if mail['location'] is None: 
+                    mail['location'] = input("Enter Event Location: ")
 
                 # Check and ask for startdate if None
                 if mail["startdate"] is None:
@@ -324,14 +348,18 @@ def main():
                 # Check and ask for starttime if None
                 if mail["starttime"] is None:
                     print("-1 for a all day event")
-                    starttime = input("Enter start-time").strip()
+                    starttime = input("Enter start-time: ").strip()
                     if starttime == '-1':
                         pass
                     else:
                         mail["starttime"] = datetime.time(dtparse(starttime, mail['when']))
-                        mail['endtime']   = datetime.time(dtparse(input("Enter end-time"),   mail['when']))
+                        mail['endtime']   = datetime.time(dtparse(input("Enter end-time: "),   mail['when']))
 
-                print(colored(addEvent(creds, mail), 'green'))
+                addedEvents.append([mail['title'], addEvent(creds, mail)])
+
+        print("Added the following events: ")
+        for event in addedEvents:
+            print(event)
 
 if __name__ == '__main__':
     main()
