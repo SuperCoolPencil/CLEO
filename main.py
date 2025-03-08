@@ -62,7 +62,7 @@ def dtparse(str: str, context_time = None):
     }
 
     if context_time:
-        settings[0]['RELATIVE_BASE'] = context_time
+        settings['RELATIVE_BASE'] = context_time
 
     return dateparser.parse(str, settings = settings)
 
@@ -129,7 +129,7 @@ def getMail(creds, maxResults):
             body = getPart(parts, "body").lower()
 
             # Doing it this way so I dont have to deal with escape characters
-            mail['body'] = ' '.join(body.split())
+            mail['body'] = body
 
             mails.append(mail)
 
@@ -247,18 +247,34 @@ def addEvent(creds, mail):
     try:
         service = build("calendar", "v3", credentials=creds)
 
-        event = {
+        if mail['starttime'] is None:
+            event = {
             'summary': mail['title'],
             'description': mail['subject'],
             'start': {
-                'dateTime': datetime.combine(mail['startdate'], mail['starttime']).isoformat(),
+                'date': mail['startdate'].isoformat(),
                 'timeZone': 'Asia/Kolkata' 
             },
             'end': {
-                'dateTime': datetime.combine(mail['enddate'], mail['endtime']).isoformat(),
+                'date': mail['enddate'].isoformat(),
                 'timeZone': 'Asia/Kolkata'
+            },
+            'location': mail['location']
             }
-        }
+        else:
+            event = {
+                'summary': mail['title'],
+                'description': mail['subject'],
+                'start': {
+                    'dateTime': datetime.combine(mail['startdate'], mail['starttime']).isoformat(),
+                    'timeZone': 'Asia/Kolkata' 
+                },
+                'end': {
+                    'dateTime': datetime.combine(mail['enddate'], mail['endtime']).isoformat(),
+                    'timeZone': 'Asia/Kolkata'
+                },
+                'location': mail['location']
+            }
 
         event = service.events().insert(calendarId='primary', body=event).execute()
 
@@ -297,7 +313,8 @@ def main():
                     continue
 
                 # TODO: Extract event names
-                mail['title'] = input("Enter Event Name: ")
+                mail['title'] =    input("Enter Event Name: ")
+                mail['location'] = input("Enter Event Location: ")
 
                 # Check and ask for startdate if None
                 if mail["startdate"] is None:
@@ -306,8 +323,13 @@ def main():
 
                 # Check and ask for starttime if None
                 if mail["starttime"] is None:
-                    mail["starttime"] = datetime.time(dtparse(input("Enter start-time"), mail['when']))
-                    mail['endtime']   = datetime.time(dtparse(input("Enter end-time"),   mail['when']))
+                    print("-1 for a all day event")
+                    starttime = input("Enter start-time").strip()
+                    if starttime == '-1':
+                        pass
+                    else:
+                        mail["starttime"] = datetime.time(dtparse(starttime, mail['when']))
+                        mail['endtime']   = datetime.time(dtparse(input("Enter end-time"),   mail['when']))
 
                 print(colored(addEvent(creds, mail), 'green'))
 
