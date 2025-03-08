@@ -20,12 +20,12 @@ CLEO is a command-line tool designed to streamline your inbox by reading your em
 - [x] **Calendar Syncing:**  
   - Automatically create and update Google Calendar events based on extracted email data.
 
-- [ ] **Event Title Extraction:**  
-  - Capture event titles from email subjects and contextual clues in the body.
-
-- [ ] **Location Extraction:**  
+- [x] **Location Extraction:**  
   - Detect venues (street addresses), internal room codes (e.g., "C7", "LG1") using custom regex or spaCy’s EntityRuler.
   - Explore integrating Google Maps API.
+
+- [ ] **Event Title Extraction:**  
+  - Capture event titles from email subjects and contextual clues in the body.
 
 - [ ] **Additional NLP Integration:**  
   - Experiment with a small LLM (e.g., DistilBERT) to enhance extraction of nuanced details.

@@ -327,6 +327,8 @@ def main():
 
             if mail['startdate'] or mail['starttime']:
 
+                print("-"*80)
+
                 for key, value in mail.items():
                     if value:
                         print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
