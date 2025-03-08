@@ -8,7 +8,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import re
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 import sys
 from termcolor import colored
 from tqdm import tqdm
@@ -54,6 +54,17 @@ def authenticate():
                 token.write(creds.to_json())
         
     return creds
+
+def dtparse(str: str, context_time = None):
+
+    settings = {
+        'DATE_ORDER': 'DMY'
+    }
+
+    if context_time:
+        settings[0]['RELATIVE_BASE'] = context_time
+
+    return dateparser.parse(str, settings = settings)
 
 def getPart(parts, type):
 
@@ -110,7 +121,8 @@ def getMail(creds, maxResults):
                     mail['subject'] = values['value']
 
                 elif name == "Date":
-                    mail['when'] = values['value']
+                    date_format = "%a, %d %b %Y %H:%M:%S %z"
+                    mail['when'] = datetime.strptime(values['value'], date_format)
 
             parts = msg['payload']['parts']
 
@@ -128,108 +140,108 @@ def getMail(creds, maxResults):
     except HttpError as error:
         print(f"An error occurred: {error}")
 
-def extractDate(sentence, contextTime):
+def parseExplicitDate(body: str):
+    # Extract and parse explicit date strings from a sentence using regex
+    # returns a list of date objects 
 
-    # context time is just time the mail was received. It is needed for relative dates 
-
-    # TODO: implement things like today, tommorow
-    # TODO: figure out how this is going to work with multi-day events and stuff
-    
-    results = []
-
-    relative_date_regex = r'\b(?:(?:today|tomorr?(?:ow|morow)|yesterday)|(?:(?:next|last|this|on)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)))\b'
-
-    results = re.findall(relative_date_regex, sentence)
-
-    if len(results) > 0:
-        # if we find relative dates, no need to find hardcoded dates
-        
-        for i in range(len(results)):
-            results[i] = datetime.now() - dateparser.parse(results[i]) + contextTime
-        
-        return results[0]
-
-    date_regexes = [
+    explicit_date_regexes = [
         r'\b\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}\b', 
         r'\b\d{1,2}(?:th|st|nd|rd)?(?:[\s,]+|(?:\s+of\s+))?(?:(?:jan(?:uary)?)|(?:feb(?:ruary)?)|(?:mar(?:ch)?)|(?:apr(?:il)?)|may|(?:jun(?:e)?)|(?:jul(?:y)?)|(?:aug(?:ust)?)|(?:sep(?:tember)?)|(?:oct(?:ober)?)|(?:nov(?:ember)?)|(?:dec(?:ember)?))\b,?\s*(?:\d{4})?\b', 
         r'\b(?:(?:jan(?:uary)?)|(?:feb(?:ruary)?)|(?:mar(?:ch)?)|(?:apr(?:il)?)|may|(?:jun(?:e)?)|(?:jul(?:y)?)|(?:aug(?:ust)?)|(?:sep(?:tember)?)|(?:oct(?:ober)?)|(?:nov(?:ember)?)|(?:dec(?:ember)?))\s+\d{1,2},?\s*(?:\d{4})?(?:(?:\s)|\.)\b'
     ]
 
-    for regex in date_regexes:
-            
-        results = re.findall(regex, sentence)
+    results = []
 
-        if len(results) > 0:
+    parsed_results = []
 
-            # we need to remove stuff like 'th' to make it play nice with datetime
-            return re.sub(r'(\d+)(st|nd|rd|th)(\s+of)?\s+', r'\1 ', results[0])
-        
-    return ''
+    for regex in explicit_date_regexes:
+        results.extend(re.findall(regex, body))
 
-def extractTime(sentence):
+    for result in results:
+        # remove any whitespace and surrounding characters
+        result = result.strip()
+        result = datetime.date(dtparse(result))
+        if result:
+            parsed_results.append(result)
+
+    return parsed_results
+
+def parseRelativeDates(body: str, context_time: datetime):
+    # Isolate and parse relative date expressions (like “today", “next Monday”) 
+    # using regex and a date parsing library with a relative base.
+    # returns a list of date objects 
+
+    relative_date_regex = r'\b(?:(?:today|tomorr?(?:ow|morow)|yesterday)|(?:(?:next|last|this|on)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)))\b'
+    results = re.findall(relative_date_regex, body)
+
+    parsed_results = []
+
+    for result in results:
+        # remove any whitespace and surrounding characters
+        result = result.strip()
+        if result:
+            continue
+        result = datetime.date(dtparse(result, context_time))
+        if result:
+            parsed_results.append(result)
+    
+    return parsed_results
+
+def parseTime(body: str):
+    # Extract and parse explicit date strings from a sentence using regex
+    # returns a list of time objects 
 
     time_regex = r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b'
 
-    results = re.findall(time_regex, sentence)
+    results = re.findall(time_regex, body)
 
-    if len(results) > 0:
+    parsed_results = []
 
-        return results[0]
-    
-    return ''
+    for i, result in enumerate(results):
+        # remove any whitespace and surrounding characters
+        result = result.strip()
 
-def extractDateHelper(sentence, contextTime):
+        try:
+            result = dateparser.parse(result)
+            result = datetime.time(result)
 
-    # We can just work with a single sentence at a time and extract date and time
+            parsed_results.append(result)
+        except:
+            pass
 
-    date = extractDate(sentence, contextTime)
-
-    if type(date) == type(datetime.now()):
-        date = date.strftime("%Y-%m-%d")
-
-    time = extractTime(sentence)
-
-    if date or time:
-        return date + ' ' + time
-    
-    return ''
-
-def normalize_date(date_list):
-
-    date_str = " ".join(date_list) if isinstance(date_list, list) else date_list
-    date_obj = dateparser.parse(date_str)
-    
-    # Convert to desired format (ISO 8601)
-    return date_obj if date_obj else None
+    return parsed_results
 
 def extractDateTime(mails):
 
-    # TODO: FIX THIS MESS (it works tho...)
+    for mail in mails:
 
-    for mail in tqdm(mails):
+        context_time = mail['when']
+        body = mail['body']
+        subject = mail['subject']
 
-        date_format = "%a, %d %b %Y %H:%M:%S %z"
+        dates = parseExplicitDate(body + " " + subject.lower()) + parseRelativeDates(body + " " + subject.lower(), context_time)
+        times = parseTime(body)
 
-        contextTime = datetime.strptime(mail['when'], date_format)
+        # Remove any duplicate entries
+        dates = list(set(dates))
+        times = list(set(times))
 
-        dt = []
+        dates.sort()
+        times.sort()
 
-        for sentence in mail['body'].split('.'):
+        if dates:
+            mail['startdate'] = dates[0]
+            mail['enddate'] = dates[-1]
+        else:
+            mail['startdate'] = None
+            mail['enddate'] = None
 
-            data = extractDateHelper(sentence, contextTime)
-
-            if data:
-
-                dt.append(data)
-        
-        mail['datetime'] = normalize_date(dt)
-
-        if not mail['datetime']:
-            # if nothing is found in body we could try looking at the subject
-            dt = extractDateHelper(mail['subject'].lower(), contextTime)
-            mail['datetime'] = normalize_date(dt)
-
-from datetime import timedelta  # Ensure you import timedelta
+        if times:
+            mail['starttime'] = times[0]
+            mail['endtime'] = times[-1]
+        else:
+            mail['starttime'] = None
+            mail['endtime'] = None
 
 def addEvent(creds, mail):
     try:
@@ -237,13 +249,13 @@ def addEvent(creds, mail):
 
         event = {
             'summary': mail['title'],
-            'description': mail['subject'] + '\n' + mail['body'],
+            'description': mail['subject'],
             'start': {
-                'dateTime': mail['datetime'].isoformat(),
+                'dateTime': datetime.combine(mail['startdate'], mail['starttime']).isoformat(),
                 'timeZone': 'Asia/Kolkata' 
             },
             'end': {
-                'dateTime': (mail['datetime'] + timedelta(hours=int(mail['duration']))).isoformat(),
+                'dateTime': datetime.combine(mail['enddate'], mail['endtime']).isoformat(),
                 'timeZone': 'Asia/Kolkata'
             }
         }
@@ -255,12 +267,8 @@ def addEvent(creds, mail):
     except HttpError as error:
         print(f"An error occurred: {error}")
 
-
-# Created a main function for better structure
 def main():
-
     
-
     maxResults = sys.argv[1] if len(sys.argv) > 1 else 5
 
     creds = authenticate()
@@ -278,27 +286,30 @@ def main():
         print("[-] Extracting date and time...")
         extractDateTime(mails)
 
-        # TODO: Extract event names
-
         for mail in mails:
 
-            if mail['datetime']:
-                
-                print(colored(mail['subject'], 'yellow'), colored(mail['datetime'], 'cyan'))
+            if mail['startdate'] or mail['starttime']:
 
-                if input("Add event to calendar? [Y/n]: ") == 'n':
+                for key, value in mail.items():
+                    print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
+
+                if input("Add to calendar? [Y/n]: ") == 'n':
                     continue
-                
-                print()
-                print(mail['body'])
-                mail['duration'] = input("Enter duration in hours: ")
-                mail['title'] = input("Enter event title: ")
 
-                addEvent(creds, mail)
+                # TODO: Extract event names
+                mail['title'] = input("Enter Event Name: ")
 
+                # Check and ask for startdate if None
+                if mail["startdate"] is None:
+                    mail["startdate"] = datetime.date(dtparse(input("Enter start-date: "), mail['when']))
+                    mail['enddate']   = datetime.date(dtparse(input("Enter end-date: ",    mail['when'])))
 
-        
-        
+                # Check and ask for starttime if None
+                if mail["starttime"] is None:
+                    mail["starttime"] = datetime.time(dtparse(input("Enter start-time"), mail['when']))
+                    mail['endtime']   = datetime.time(dtparse(input("Enter end-time"),   mail['when']))
+
+                print(colored(addEvent(creds, mail), 'green'))
 
 if __name__ == '__main__':
     main()

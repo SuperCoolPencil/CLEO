@@ -17,7 +17,7 @@ CLEO is a command-line tool designed to streamline your inbox by reading your em
 - [x] **Calendar Syncing:**  
   - Automatically create and update Google Calendar events based on extracted email data.
 
-- [ ] **Multi-Date Events**
+- [x] **Multi-Date Events**
   - handling events that span multiple days (e.g., ")
 
 - [ ] **Event Title Extraction:**  
