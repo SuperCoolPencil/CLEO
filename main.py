@@ -8,7 +8,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import sys
 from termcolor import colored
 from tqdm import tqdm
@@ -59,7 +59,8 @@ def authenticate():
 def dtparse(str: str, context_time = None):
 
     settings = {
-        'DATE_ORDER': 'DMY'
+        'DATE_ORDER': 'DMY',
+        'PREFER_DATES_FROM': 'future'
     }
 
     if context_time:
@@ -67,7 +68,7 @@ def dtparse(str: str, context_time = None):
 
     return dateparser.parse(str, settings = settings)
 
-def getPart(parts, type):
+def getEmailBody(parts, type):
 
     # check for plain text
     for part in parts:
@@ -82,7 +83,7 @@ def getPart(parts, type):
     # parse html using beautiful soup 4
     for part in parts:
         if part.get('mimeType') == 'text/html':
-            data = part['body'].get('data')
+            data = part['text'].get('data')
             if data:
                 byte_code = base64.urlsafe_b64decode(data)
                 html = byte_code.decode("utf-8")
@@ -106,13 +107,13 @@ def getMail(creds, maxResults):
 
         for message in messages:
 
-            mail = {}
+            mail = dict()
 
             msg = service.users().messages().get(userId = "me", id = message['id']).execute()
-            email_data = msg['payload']['headers']
+            headers = msg['payload']['headers']
 
             # extract from, subject, datetime from headers
-            for values in email_data:
+            for values in headers:
                 name = values['name']
 
                 if name == 'From':
@@ -127,7 +128,7 @@ def getMail(creds, maxResults):
 
             parts = msg['payload']['parts']
 
-            body = getPart(parts, "body").lower()
+            body = getEmailBody(parts, "body").lower()
 
             # Doing it this way so I dont have to deal with escape characters
             mail['body'] = body
@@ -141,14 +142,66 @@ def getMail(creds, maxResults):
     except HttpError as error:
         print(f"An error occurred: {error}")
 
-def parseExplicitDate(body: str):
+def parseDateRange(text: str, context_time):
+
+    # Parses sequential multidates such as 14th - 16th august 2025 and 8th to 30th August
+
+    regexes = [
+        # Pattern for 14th - 16th August 2023 or 14-16 August 2023
+        r'\b(\d{1,2})(?:th|st|nd|rd)?\s*(?:to|-)\s*(\d{1,2})(?:th|st|nd|rd)?(?:\s+of)?\s+((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{2,4})?)\b',
+        
+        # Pattern for August 14-16, 2023
+        r'\b((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))\s+(\d{1,2})(?:th|st|nd|rd)?\s*(?:to|-)\s*(\d{1,2})(?:th|st|nd|rd)?(?:,?\s+(\d{2,4})?)?\b',
+        
+        # Pattern for from 14th August to 16th August 2023
+        r'\bfrom\s+(\d{1,2})(?:th|st|nd|rd)?\s+((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))\s+to\s+(\d{1,2})(?:th|st|nd|rd)?\s+((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{2,4})?)\b'
+    ]   
+
+    for i, regex in enumerate(regexes):
+
+        match = re.search(regex, text)
+
+        if match:
+            groups = match.groups()
+
+            if i == 0:
+                day1, day2, month_year = groups
+                date1_str = f"{day1} {month_year}"
+                date2_str = f"{day2} {month_year}"
+
+            elif i == 1:
+                month, day1, day2, year = groups
+                year = year or ''
+                date1_str = f"{day1} {month} {year}"
+                date2_str = f"{day2} {month} {year}"
+            
+            elif i == 2:
+                day1, month1, day2, month2_year = groups
+                date1_str = f"{day1} {month1}"
+                date2_str = f"{day2} {month2_year}"
+
+            date1 = datetime.date(dtparse(date1_str, context_time))
+            date2 = datetime.date(dtparse(date2_str, context_time))
+
+            return [date1, date2]
+    
+    return None
+
+def parseExplicitDate(text: str, context_time):
     # Extract and parse explicit date strings from a sentence using regex
     # returns a list of date objects 
 
     explicit_date_regexes = [
-        r'\b\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}\b', 
-        r'\b\d{1,2}(?:th|st|nd|rd)?(?:[\s,]+|(?:\s+of\s+))?(?:(?:jan(?:uary)?)|(?:feb(?:ruary)?)|(?:mar(?:ch)?)|(?:apr(?:il)?)|may|(?:jun(?:e)?)|(?:jul(?:y)?)|(?:aug(?:ust)?)|(?:sep(?:tember)?)|(?:oct(?:ober)?)|(?:nov(?:ember)?)|(?:dec(?:ember)?))\b,?\s*(?:\d{4})?\b', 
-        r'\b(?:(?:jan(?:uary)?)|(?:feb(?:ruary)?)|(?:mar(?:ch)?)|(?:apr(?:il)?)|may|(?:jun(?:e)?)|(?:jul(?:y)?)|(?:aug(?:ust)?)|(?:sep(?:tember)?)|(?:oct(?:ober)?)|(?:nov(?:ember)?)|(?:dec(?:ember)?))\s+\d{1,2},?\s*(?:\d{4})?(?:(?:\s)|\.)\b'
+        # ISO format: 2023-08-14, 14/08/2023, 14.08.2023
+        r'\b\d{1,4}[-./]\d{1,2}[-./]\d{1,4}\b',
+        
+        # Format: 14th August 2023, August 14th 2023
+        r'\b\d{1,2}(?:th|st|nd|rd)?(?:\s+of)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{2,4}\b',
+        r'\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:th|st|nd|rd)?(?:,?\s+\d{2,4})?\b',
+        
+        # Month and day without year: 14th August, August 14th
+        r'\b\d{1,2}(?:th|st|nd|rd)?(?:\s+of)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b',
+        r'\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:th|st|nd|rd)?\b'
     ]
 
     results = []
@@ -156,24 +209,28 @@ def parseExplicitDate(body: str):
     parsed_results = []
 
     for regex in explicit_date_regexes:
-        results.extend(re.findall(regex, body))
+        results.extend(re.findall(regex, text))
 
     for result in results:
         # remove any whitespace and surrounding characters
         result = result.strip()
-        result = datetime.date(dtparse(result))
+
+        result = datetime.date(dtparse(result, context_time))
         if result:
             parsed_results.append(result)
 
+    # remove duplicates
+    parsed_results = list(set(parsed_results))
+
     return parsed_results
 
-def parseRelativeDates(body: str, context_time: datetime):
+def parseRelativeDates(text: str, context_time: datetime):
     # Isolate and parse relative date expressions (like “today", “next Monday”) 
     # using regex and a date parsing library with a relative base.
     # returns a list of date objects 
 
-    relative_date_regex = r'\b(?:(?:today|tomorr?(?:ow|morow)|yesterday)|(?:(?:next|last|this|on)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)))\b'
-    results = re.findall(relative_date_regex, body)
+    relative_date_regex = r'\b(?:today|tomorr?ow|yesterday|this (?:coming )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:this|coming|next) week(?:end)?)\b'
+    results = re.findall(relative_date_regex, text)
 
     parsed_results = []
 
@@ -188,61 +245,197 @@ def parseRelativeDates(body: str, context_time: datetime):
     
     return parsed_results
 
-def parseTime(body: str):
+def parseTime(text: str):
     # Extract and parse explicit date strings from a sentence using regex
     # returns a list of time objects 
 
-    time_regex = r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b'
+    time_regexes = [
+        # Standard time: 9:00 am, 9.00 am, 9am
+        r'\b(\d{1,2})(?::|\.)(\d{2})?\s*(am|pm)\b',
+        r'\b(\d{1,2})\s*(am|pm)\b',
+        
+        # 24-hour time: 14:00, 14.00
+        r'\b(\d{1,2})(?::|\.)(\d{2})(?!\s*(?:am|pm))\b',
+        
+        # Time ranges: 9-11am, 9:00-11:00am, 9am-11am
+        r'\b(\d{1,2})(?::(\d{2}))?\s*(?:-|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b',
+        r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:-|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b'
+    ]
 
-    results = re.findall(time_regex, body)
+    results = []
 
-    parsed_results = []
+    for i, pattern in enumerate(time_regexes):
+        matches = re.finditer(pattern, text)
+        for match in matches:
 
-    for i, result in enumerate(results):
-        # remove any whitespace and surrounding characters
-        result = result.strip()
+            groups = match.groups()
+    
+            if i == 0:
+                
+                hour   = int(groups[0])
+                minute = int(groups[1] or 0)
+                period = groups[2]
+                
+                if period == 'pm' and hour < 12:
+                    hour += 12
+                elif period == 'am' and hour == 12:
+                    hour = 0
+                
+                results.append(time(hour, minute))
 
-        try:
-            result = dateparser.parse(result)
-            result = datetime.time(result)
+            elif i == 1:
+                
+                hour = int(groups[0])
+                period = groups[1]
 
-            parsed_results.append(result)
-        except:
-            pass
+                if groups[0] == '00' or hour > 12:
+                    continue
+                
+                if period == 'pm' and hour < 12:
+                    hour += 12
+                elif period == 'am' and hour == 12:
+                    hour = 0
 
-    return parsed_results
+                results.append(time(hour, 0))
+                
+            elif i == 2:  
+
+                # 24hr time
+                hour = int(groups[0])
+                minute = int(groups[1] or 0)
+                results.append(time(hour, minute))
+                
+            elif i == 3:  # Time range (same period)
+
+                start_hour = int(groups[0])
+                start_minute = int(groups[1] or 0)
+                end_hour = int(groups[2])
+                end_minute = int(groups[3] or 0)
+                period = groups[4]
+                
+                if period == 'pm':
+                    if start_hour < 12:
+                        start_hour += 12
+                    if end_hour < 12:
+                        end_hour += 12
+                elif period == 'am':
+                    if start_hour == 12:
+                        start_hour = 0
+                    if end_hour == 12:
+                        end_hour = 0
+                
+                return [time(start_hour, start_minute), time(end_hour, end_minute)]
+                 
+            elif i == 4:  # Time range (different periods)
+                start_hour   = int(groups[0])
+                start_minute = int(groups[1] or 0)
+                start_period = groups[2]
+                end_hour     = int(groups[3])
+                end_minute   = int(groups[4] or 0)
+                end_period   = groups[5]
+                
+                if start_period == 'pm' and start_hour < 12:
+                    start_hour += 12
+                elif start_period == 'am' and start_hour == 12:
+                    start_hour = 0
+                    
+                if end_period == 'pm' and end_hour < 12:
+                    end_hour += 12
+                elif end_period == 'am' and end_hour == 12:
+                    end_hour = 0
+                
+                return [time(start_hour, start_minute), time(end_hour, end_minute)]
+    
+    # remove duplicates
+    unique_results = list(set(results))
+    return unique_results
+
+def fixDateTime(result, context_time):
+
+    today = context_time.date()
+
+    if result['startdate'] and not result['enddate']:
+        result['enddate'] = result['startdate']
+    
+    # If only enddate use today as startdate
+    if not result['startdate'] and result['enddate']:
+        result['startdate'] = today
+    
+    # If dates are in wrong order, swap them
+    if result['startdate'] and result['enddate'] and result['startdate'] > result['enddate']:
+        result['startdate'], result['enddate'] = result['enddate'], result['startdate']
+    
+    # TODO
+    # Not sure about this
+    # If only one time is found early in the day, assume starttime
+    # and add a default duration (e.g., 1 hour)
+    # if result['starttime'] and not result['endtime']:
+    #    hour = result['starttime'].hour
+    #    minute = result['starttime'].minute
+    #    # If time is before 1pm, assume it's a start time and add 1 hour
+    #    if hour < 13:
+    #        result['endtime'] = time((hour + 1) % 24, minute)
+
+    # If times are in wrong order, swap them
+    if result['starttime'] and result['endtime']:
+        start_minutes = result['starttime'].hour * 60 + result['starttime'].minute
+        end_minutes = result['endtime'].hour * 60 + result['endtime'].minute
+        
+        # Only swap if end is earlier and not likely a next-day event
+        if end_minutes < start_minutes and (start_minutes - end_minutes) < 720:
+            result['starttime'], result['endtime'] = result['endtime'], result['starttime']
+    
+    if result['starttime'] and not result['endtime']:
+        result['endtime'] = result['starttime']
 
 def extractDateTime(mails):
 
     for mail in mails:
 
-        context_time = mail['when']
-        body = mail['body']
-        subject = mail['subject']
+        body         = mail.get('body', '').lower()
+        subject      = mail.get('subject', '').lower()
+        context_time = mail.get('when', datetime.now())
 
-        dates = parseExplicitDate(body + " " + subject.lower()) + parseRelativeDates(body + " " + subject.lower(), context_time)
-        times = parseTime(body)
+        full_text = f"{subject} {body}".lower()
 
-        # Remove any duplicate entries
-        dates = list(set(dates))
-        times = list(set(times))
+        datetime_info = {
+            'startdate': None,
+            'enddate': None,
+            'starttime': None,
+            'endtime': None,
+            'daily': None
+        }
 
-        dates.sort()
-        times.sort()
+        date_range = parseDateRange(full_text, context_time)
 
-        if dates:
-            mail['startdate'] = dates[0]
-            mail['enddate'] = dates[-1]
+        if date_range:
+            datetime_info['startdate'] = date_range[0]
+            datetime_info['enddate'] = date_range[1]
+            datetime_info['daily'] = True
+
         else:
-            mail['startdate'] = None
-            mail['enddate'] = None
-
+            # Try to find individual dates
+            dates = parseExplicitDate(full_text, context_time)
+            
+            if not dates:
+                # Try relative dates
+                dates = parseRelativeDates(full_text, context_time)
+            
+            if dates:
+                dates.sort()
+                datetime_info['startdate'] = dates[0]
+                datetime_info['enddate'] = dates[-1]
+        
+        times = parseTime(full_text)
         if times:
-            mail['starttime'] = times[0]
-            mail['endtime'] = times[-1]
-        else:
-            mail['starttime'] = None
-            mail['endtime'] = None
+            times.sort()
+            datetime_info['starttime'] = times[0]
+            datetime_info['endtime'] = times[-1] if len(times) > 1 else None
+
+        fixDateTime(datetime_info, context_time)
+        
+        for key, value in datetime_info.items():
+            mail[key] = value
 
 def extractLocation(mails):
 
@@ -265,7 +458,7 @@ def addEvent(creds, mail, conflict_resolution = "default"):
 
         service = build("calendar", "v3", credentials=creds)
         
-        # Determine event start and end as datetime objects for conflict checking.
+        # determine event start and end as datetime objects for conflict checking.
         if mail['starttime'] is None:
             # For all-day events, use the full day.
             event_start = datetime.combine(mail['startdate'], datetime.min.time()).astimezone(tz)
@@ -300,7 +493,7 @@ def addEvent(creds, mail, conflict_resolution = "default"):
                 return 'conflict_action_needed'
             
             elif conflict_resolution == "keep_old":
-                print("Keeping old events. New event will not be added.")
+                print("[=] Keeping old events. New event will not be added.")
                 return None
             
             elif conflict_resolution == "keep_new":
@@ -309,47 +502,74 @@ def addEvent(creds, mail, conflict_resolution = "default"):
                     event_id = conflict.get('id')
                     service.events().delete(calendarId='primary', eventId=event_id).execute()
             
-                print("Old conflicting events deleted. Proceeding to add new event.")
+                print("[-] Old conflicting events deleted. Proceeding to add new event.")
 
-            elif conflict_resolution == "both":
-                print("Adding new event alongside existing conflicting events.")
+            elif conflict_resolution == "keep_both":
+                print("[+] Adding new event alongside existing conflicting events.")
 
             else:
-                print(f"Invalid conflict resolution option: {conflict_resolution}. Aborting.")
+                print(f"[!] Invalid conflict resolution option: {conflict_resolution}. Aborting.")
                 return None
         
         local_zone = 'Asia/Kolkata'
 
+        event_body = {
+            'summary': mail['title'],
+            'description': mail['subject'],
+            'location': mail['location']
+        }
+
         # Build event body based on whether it's an all-day or timed event.
         if mail['starttime'] is None:
-            event_body = {
-                'summary': mail['title'],
-                'description': mail['subject'],
-                'start': {
+            
+            event_body['start'] = {
+                'date': mail['startdate'].isoformat(),
+                'timeZone': local_zone
+            }
+            event_body['end'] = {
+                'date': mail['enddate'].isoformat(),
+                'timeZone': local_zone
+            }
+
+        else:
+            event_body['start'] = {
+                'dateTime': event_start.isoformat(),
+                'timeZone': local_zone
+            }
+            event_body['end'] = {
+                'dateTime': event_end.isoformat(),
+                'timeZone': local_zone
+            }
+
+        if mail['daily'] == True:
+
+            # change end date and end time to a single day and then use recurrence
+
+            if mail['starttime'] is None:
+
+                event_body['start'] = {
                     'date': mail['startdate'].isoformat(),
                     'timeZone': local_zone
-                },
-                'end': {
-                    'date': mail['enddate'].isoformat(),
-                    'timeZone': local_zone
-                },
-                'location': mail['location']
-            }
-        else:
-            event_body = {
-                'summary': mail['title'],
-                'description': mail['subject'],
-                'start': {
+                }
+                event_body['end'] = event_body['start']
+
+            else:
+                event_body['start'] = {
                     'dateTime': event_start.isoformat(),
                     'timeZone': local_zone
-                },
-                'end': {
-                    'dateTime': event_end.isoformat(),
+                }
+                event_body['end'] = {
+                    'dateTime': datetime.combine(mail['startdate'], mail['endtime']).isoformat(),
                     'timeZone': local_zone
-                },
-                'location': mail['location']
-            }
-        
+                }
+
+
+            no_of_days = (mail['enddate'] - mail['startdate']).days
+
+            event_body['recurrence'] = [
+                f'RRULE:FREQ=DAILY;COUNT={no_of_days}'  
+            ]
+
         # Insert the new event.
         event = service.events().insert(calendarId='primary', body=event_body).execute()
         return event.get('htmlLink')
@@ -365,7 +585,7 @@ def main():
 
     if creds and creds.valid:
 
-        print("[-] User authenticated!")
+        print("[~] User authenticated!")
         print("[o] Getting mail...")
 
         mails = getMail(creds, maxResults)
@@ -376,7 +596,7 @@ def main():
         
         print("[~] Pulled mail from Gmail API!")
 
-        print("[-] Extracting date and time...")
+        print("[~] Extracting date and time...")
         extractDateTime(mails)
 
         print("[~] Extracting location...")
@@ -414,7 +634,7 @@ def main():
                     if starttime == '-1':
                         pass
                     else:
-                        mail["starttime"] = datetime.time(dtparse(starttime, mail['when']))
+                        mail["starttime"] = datetime.time(dtparse(starttime                , mail['when']))
                         mail['endtime']   = datetime.time(dtparse(input("Enter end-time: "), mail['when']))
 
                 addedEvent = addEvent(creds, mail)
@@ -430,9 +650,10 @@ def main():
 
                 addedEvents.append(addedEvent)
 
-        print("Added the following events: ")
-        for event in addedEvents:
-            print(event)
+                if addedEvent:
+                    print(colored(f"[+] Added \"{mail['title']}\" to your calendar!", 'green'))
+            else:
+                print(colored(f"[=] Skipped \"{mail['subject']}\"", 'green'))
 
 if __name__ == '__main__':
     main()

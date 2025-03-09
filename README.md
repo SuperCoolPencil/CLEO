@@ -41,3 +41,18 @@ CLEO is a command-line tool designed to streamline your inbox by reading your em
   - Include map integration for visualizing event locations.
 
 ### Stay Organized, Effortlessly with CLEO! 
+
+## CLEO in Action!
+
+Here’s a normal run of CLEO extracting details from an email and syncing to the calendar:
+
+![CLEO normal usage screenshot](./screenshots/ss1.png)
+_Description:_ In this screenshot, CLEO extracts the event date, time, and location from a single-day email, then confirms whether the user wants to add it to their calendar.
+
+Here’s a quick look at CLEO parsing multi-day events and adding them to the calendar:
+
+![CLEO adding a multi-day event](./images/ss2.png)
+
+And here’s an example of how CLEO handles conflicting events:
+
+![CLEO detecting conflicting events](./images/ss3.png)
