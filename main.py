@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import sys
 from termcolor import colored
 from tqdm import tqdm
+import tzlocal
 
 print('''
     ░█████╗░██╗░░░░░███████╗░█████╗░
@@ -245,55 +246,114 @@ def extractDateTime(mails):
 
 def extractLocation(mails):
 
-    location_regex = r'\b(?:in|venue:?|at|location:?|where:?)(?:\s+the)?\s+([\w\s]{3,})\b'
-
+    location_regex = r'\b(?:in|venue:?|at|location:?|where:?)(?:\s+the)?\s+([\w\s,()\-]+?)(?=\r|\n|$|-|\.)'
+    
     for mail in mails:
 
-        match = re.search(location_regex, mail['body'])
-        if match:
-            # Clean up any potential extra whitespace
-            mail['location'] = match.group(1).strip()
+        results = re.findall(location_regex, mail['body'])
+
+        if results:
+            longest_match = sorted(results, key=len)[-1]
+            mail['location'] = longest_match.strip()
+
         else:
             mail['location'] = None
 
-
-def addEvent(creds, mail):
+def addEvent(creds, mail, conflict_resolution = "default"):
     try:
-        service = build("calendar", "v3", credentials=creds)
+        tz = datetime.now().astimezone().tzinfo
 
+        service = build("calendar", "v3", credentials=creds)
+        
+        # Determine event start and end as datetime objects for conflict checking.
         if mail['starttime'] is None:
-            event = {
-            'summary': mail['title'],
-            'description': mail['subject'],
-            'start': {
-                'date': mail['startdate'].isoformat(),
-                'timeZone': 'Asia/Kolkata' 
-            },
-            'end': {
-                'date': mail['enddate'].isoformat(),
-                'timeZone': 'Asia/Kolkata'
-            },
-            'location': mail['location']
-            }
+            # For all-day events, use the full day.
+            event_start = datetime.combine(mail['startdate'], datetime.min.time()).astimezone(tz)
+            event_end   = datetime.combine(mail['enddate'], datetime.max.time()).astimezone(tz)
         else:
-            event = {
+            event_start = datetime.combine(mail['startdate'], mail['starttime']).astimezone(tz)
+            event_end   = datetime.combine(mail['enddate'], mail['endtime']).astimezone(tz)
+        
+        # Check for conflicting events in the given time range.
+        events_result = service.events().list(
+            calendarId = 'primary',
+            timeMin = event_start.isoformat(),
+            timeMax = event_end.isoformat(),
+            singleEvents = True,
+            orderBy = 'startTime'
+        ).execute()
+
+        conflicts = events_result.get('items', [])      
+        
+        if conflicts:
+            print(colored("[!] Conflicting events found:", 'light_red'))
+
+            for conflict in conflicts:
+
+                summary = conflict.get('summary', 'No Title')
+                start = conflict['start']
+                end = conflict['end']
+
+                print(f"- {summary}: starts at {start} and ends at {end}")
+            
+            if conflict_resolution == "default":
+                return 'conflict_action_needed'
+            
+            elif conflict_resolution == "keep_old":
+                print("Keeping old events. New event will not be added.")
+                return None
+            
+            elif conflict_resolution == "keep_new":
+                # Delete conflicting events.
+                for conflict in conflicts:
+                    event_id = conflict.get('id')
+                    service.events().delete(calendarId='primary', eventId=event_id).execute()
+            
+                print("Old conflicting events deleted. Proceeding to add new event.")
+
+            elif conflict_resolution == "both":
+                print("Adding new event alongside existing conflicting events.")
+
+            else:
+                print(f"Invalid conflict resolution option: {conflict_resolution}. Aborting.")
+                return None
+        
+        local_zone = 'Asia/Kolkata'
+
+        # Build event body based on whether it's an all-day or timed event.
+        if mail['starttime'] is None:
+            event_body = {
                 'summary': mail['title'],
                 'description': mail['subject'],
                 'start': {
-                    'dateTime': datetime.combine(mail['startdate'], mail['starttime']).isoformat(),
-                    'timeZone': 'Asia/Kolkata' 
+                    'date': mail['startdate'].isoformat(),
+                    'timeZone': local_zone
                 },
                 'end': {
-                    'dateTime': datetime.combine(mail['enddate'], mail['endtime']).isoformat(),
-                    'timeZone': 'Asia/Kolkata'
+                    'date': mail['enddate'].isoformat(),
+                    'timeZone': local_zone
                 },
                 'location': mail['location']
             }
-
-        event = service.events().insert(calendarId='primary', body=event).execute()
-
+        else:
+            event_body = {
+                'summary': mail['title'],
+                'description': mail['subject'],
+                'start': {
+                    'dateTime': event_start.isoformat(),
+                    'timeZone': local_zone
+                },
+                'end': {
+                    'dateTime': event_end.isoformat(),
+                    'timeZone': local_zone
+                },
+                'location': mail['location']
+            }
+        
+        # Insert the new event.
+        event = service.events().insert(calendarId='primary', body=event_body).execute()
         return event.get('htmlLink')
-
+    
     except HttpError as error:
         print(f"An error occurred: {error}")
 
@@ -345,7 +405,7 @@ def main():
                 # Check and ask for startdate if None
                 if mail["startdate"] is None:
                     mail["startdate"] = datetime.date(dtparse(input("Enter start-date: "), mail['when']))
-                    mail['enddate']   = datetime.date(dtparse(input("Enter end-date: ",    mail['when'])))
+                    mail['enddate']   = datetime.date(dtparse(input("Enter end-date: ")  , mail['when']))
 
                 # Check and ask for starttime if None
                 if mail["starttime"] is None:
@@ -355,9 +415,20 @@ def main():
                         pass
                     else:
                         mail["starttime"] = datetime.time(dtparse(starttime, mail['when']))
-                        mail['endtime']   = datetime.time(dtparse(input("Enter end-time: "),   mail['when']))
+                        mail['endtime']   = datetime.time(dtparse(input("Enter end-time: "), mail['when']))
 
-                addedEvents.append([mail['title'], addEvent(creds, mail)])
+                addedEvent = addEvent(creds, mail)
+
+                while addedEvent == 'conflict_action_needed':
+                    match input("1: Keep old\n2: Keep new\n3: Keep both\nOption: ").strip():
+                        case '1':
+                            addedEvent = addEvent(creds, mail, 'keep_old')
+                        case '2':
+                            addedEvent = addEvent(creds, mail, 'keep_new')
+                        case '3':
+                            addedEvent = addEvent(creds, mail, 'keep_both')
+
+                addedEvents.append(addedEvent)
 
         print("Added the following events: ")
         for event in addedEvents:
