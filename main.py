@@ -61,8 +61,7 @@ def authenticate():
 def dtparse(str: str, context_time = None):
 
     settings = {
-        'DATE_ORDER': 'DMY',
-        'PREFER_DATES_FROM': 'future'
+        'DATE_ORDER': 'DMY'
     }
 
     if context_time:
@@ -544,7 +543,7 @@ def generateTitleLocation(mail):
         api_key = api_key
     )
 
-    model = "gemini-2.0-flash"
+    model = "gemini-2.0-flash-lite"
     contents = [
         types.Content(
             role="user",
