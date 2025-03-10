@@ -806,9 +806,9 @@ def main():
 
                 addedEvents.append(addedEvent)
 
-                print(colored(f"[+] Added \"{mail['title']}\" to your calendar!: {addedEvent}", 'green'))
+                print(colored(f"[+] Added \"{mail['title']}\" to your calendar!", 'light_green'))
             else:
-                print(colored(f"[=] Skipped \"{mail['subject']}\"", 'green'))
+                print(colored(f"[=] Skipped \"{mail['subject']}\"", 'light_green'))
 
 if __name__ == '__main__':
     main()
