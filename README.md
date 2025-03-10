@@ -26,8 +26,8 @@ CLEO is a command-line tool designed to streamline your inbox by reading your em
 - [x] **Additional NLP Integration:**
   - CLEO's date and time extraction outperforms existing NLP solutions.
 
-- [ ] **Event Title Extraction:**
-  - Capture event titles from email subjects and contextual clues in the body using DistilBERT.
+- [x] **Event Title Extraction:**
+  - Capture event titles from email subjects and contextual clues in the body using Gemini API
 
 - [ ] **User Interface Enhancements:**  
   - Expand CLI commands for summarizing emails, listing upcoming events, and manual syncing.

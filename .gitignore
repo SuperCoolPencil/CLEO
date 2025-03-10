@@ -2,3 +2,4 @@ venv/
 credentials.json
 token.json
 test.py
+gemini-api.key

@@ -8,11 +8,13 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import re
-from datetime import datetime, timedelta, time
+from datetime import datetime, time
 import sys
 from termcolor import colored
+import os
+from google import genai
+from google.genai import types
 from tqdm import tqdm
-import tzlocal
 
 print('''
     ░█████╗░██╗░░░░░███████╗░█████╗░
@@ -292,19 +294,24 @@ def parseRelativeDates(text: str, context_time: datetime):
     # using regex and a date parsing library with a relative base.
     # returns a list of date objects 
 
-    relative_date_regex = r'\b(?:today|tomorr?ow|yesterday|this (?:coming )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:this|coming|next) week(?:end)?)\b'
-    results = re.findall(relative_date_regex, text)
-
+    relative_date_regex = r'\b(?:(?:from|on)\s+)?(today|tomorrow|yesterday|this\s+(?:week|weekend)|(?:(?:coming|next)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:week|weekend))\b'
+    
+    matches = re.finditer(relative_date_regex, text, re.IGNORECASE)
+    
     parsed_results = []
-
-    for result in results:
-        # remove any whitespace and surrounding characters
-        result = result.strip()
-        if result:
+    
+    for match in matches:
+        result = match.group(0)
+        
+        if not result:
             continue
-        result = datetime.date(dtparse(result, context_time))
-        if result:
-            parsed_results.append(result)
+
+        parsed_date = dtparse(result, context_time)
+        
+        if parsed_date:
+            date = datetime.date(parsed_date)
+
+            parsed_results.append(date)
     
     return parsed_results
 
@@ -366,10 +373,14 @@ def parseTime(text: str):
                 # 24hr time
                 hour = int(groups[0])
                 minute = int(groups[1] or 0)
-                results.append(time(hour, minute))
-                
-            elif i == 3:  # Time range (same period)
 
+                if hour > 24 or minute > 60:
+                    continue
+
+                results.append(time(hour, minute))
+            
+            elif i == 3:  # Time range (same period)
+                
                 start_hour = int(groups[0])
                 start_minute = int(groups[1] or 0)
                 end_hour = int(groups[2])
@@ -388,7 +399,7 @@ def parseTime(text: str):
                         end_hour = 0
                 
                 return [time(start_hour, start_minute), time(end_hour, end_minute)]
-                 
+            
             elif i == 4:  # Time range (different periods)
                 start_hour   = int(groups[0])
                 start_minute = int(groups[1] or 0)
@@ -428,16 +439,15 @@ def fixDateTime(result, context_time):
     if result['startdate'] and result['enddate'] and result['startdate'] > result['enddate']:
         result['startdate'], result['enddate'] = result['enddate'], result['startdate']
     
-    # TODO
     # Not sure about this
     # If only one time is found early in the day, assume starttime
     # and add a default duration (e.g., 1 hour)
-    # if result['starttime'] and not result['endtime']:
-    #    hour = result['starttime'].hour
-    #    minute = result['starttime'].minute
-    #    # If time is before 1pm, assume it's a start time and add 1 hour
-    #    if hour < 13:
-    #        result['endtime'] = time((hour + 1) % 24, minute)
+    if result['starttime'] and not result['endtime']:
+        hour = result['starttime'].hour
+        minute = result['starttime'].minute
+        # If time is before 1pm, assume it's a start time and add 1 hour
+        if hour < 13:
+            result['endtime'] = time((hour + 1) % 24, minute)
 
     # If times are in wrong order, swap them
     if result['starttime'] and result['endtime']:
@@ -483,7 +493,7 @@ def extractDateTime(mails):
                 datetime_info['enddate'] = connected_dates[-1]
                 # If we have multiple specific dates, they might not be daily events
                 datetime_info['daily'] = False
-                # Store all dates for potential multi-day handling later
+                # Store all dates for multi-day handling later
                 datetime_info['all_dates'] = connected_dates
             else:
                 # Try to find individual dates
@@ -508,155 +518,234 @@ def extractDateTime(mails):
         
         for key, value in datetime_info.items():
             mail[key] = value
-            
-def extractLocation(mails):
+
+def extractLocation(text):
 
     location_regex = r'\b(?:in|venue:?|at|location:?|where:?)(?:\s+the)?\s+([\w\s,()\-]+?)(?=\r|\n|$|-|\.)'
+
+    results = re.findall(location_regex, text)
+
+    if results:
+        longest_match = sorted(results, key=len)[-1]
+        return longest_match.strip()
+
+    else:
+        return ''
+
+def generateTitleLocation(mail):
+
+    if os.path.exists("gemini-api.key"):
+        with open("gemini-api.key", 'r') as f:
+            api_key = f.read()
+    else:
+        return None
+
+    client = genai.Client(
+        api_key = api_key
+    )
+
+    model = "gemini-2.0-flash"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text=f"""Extract event details from the following text. Your task is to:
+                                                Generate the event title.
+                                                Determine the event location.
+
+                                                Respond with only one line in the following format:
+
+                                                [title]|[location]
+
+                                                Where:
+                                                    [title]: The event's name from the text.
+                                                    [location]: The location where the event takes place.
+
+                                                {mail}
+                                            """),
+            ],
+        ),
+    ]
+    generate_content_config = types.GenerateContentConfig(
+        temperature=0.5,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        response_mime_type="text/plain",
+    )
+
+    title = ""
+
+    for chunk in client.models.generate_content_stream(
+        model=model,
+        contents=contents,
+        config=generate_content_config,
+        ):
+        
+        title += chunk.text
+
+    return title.strip()
+
+def extractTitleLocation(mails):
+    for mail in tqdm(mails):
+
+        if not (mail['startdate'] or mail['starttime']):
+            continue
+
+        try:
+            mail['title'], mail['location'] = generateTitleLocation(mail['body']).split('|')
+        except:
+            print(colored(f"[!] Could not generate title and location for {mail['subject']}", 'light_red'))
+            mail['title'] = mail['subject']
+            mail['location'] = extractLocation(mail['body'])
+
+def insertEvent(service, event, conflict_resolution = 'ask_user', tz = datetime.now().astimezone().tzinfo):
+
+    if event['start'].get('dateTime')   :
+        events_result = service.events().list(
+                        calendarId='primary',
+                        timeMin=event['start']['dateTime'].astimezone(tz).isoformat(),
+                        timeMax=event['end']['dateTime'].astimezone(tz).isoformat(),
+                        singleEvents=True,
+                        orderBy='startTime'
+                    ).execute()
+    elif event['start'].get('date'):
+        events_result = service.events().list(
+                        calendarId='primary',
+                        timeMin=datetime.combine(event['start']['date'], time.min).astimezone(tz).isoformat(),
+                        timeMax=datetime.combine(event['end']['date'], time.max).astimezone(tz).isoformat(),
+                        singleEvents=True,
+                        orderBy='startTime'
+                    ).execute()
+
+    conflicts = events_result.get('items', [])
+
+    if conflicts:
+        print(colored("[!] Conflicting events found:", 'light_red'))
+
+        for conflict in conflicts:
+
+            summary = conflict.get('summary', 'No Title')
+            start = conflict['start']
+            end = conflict['end']
+
+            print(f"- {summary}: starts at {start} and ends at {end}")
+
+            while conflict_resolution == 'ask_user':
+                conflict_resolution = input("1: Keep old\n2: Keep new\n3: Keep both\nOption: ").strip()
+
+                if conflict_resolution == "1":
+                    print(colored("[=] Keeping old events. New event will not be added.", 'light_green'))
+                    return None
+                        
+                elif conflict_resolution == "2":
+                    # Delete conflicting events.
+                    for conflict in conflicts:
+                        event_id = conflict.get('id')
+                        service.events().delete(calendarId='primary', eventId=event_id).execute()
+                        
+                    print(colored("[-] Old conflicting events deleted. Proceeding to add new event.", 'light_green'))
+
+                elif conflict_resolution == "3":
+                    print(colored("[+] Adding new event alongside existing conflicting events.", 'light_green'))
+
+                else:
+                    print(f"[!] Invalid conflict resolution option: {conflict_resolution}.")
+                    conflict_resolution = 'ask_user'
     
-    for mail in mails:
+    if event['start'].get('dateTime'):
+        event['start']['dateTime'] = event['start']['dateTime'].isoformat()
+        event['end']['dateTime'] = event['end']['dateTime'].isoformat()
+    else:
+        event['start']['date'] = event['start']['date'].isoformat()
+        event['end']['date'] = event['end']['date'].isoformat()
 
-        results = re.findall(location_regex, mail['body'])
+    event = service.events().insert(calendarId='primary', body=event).execute()
 
-        if results:
-            longest_match = sorted(results, key=len)[-1]
-            mail['location'] = longest_match.strip()
+    return event.get("htmlLink")
+
+def createEvent(mail, date = None, local_zone = 'Asia/Kolkata'):
+
+    event = {
+        'summary': mail['title'],
+        'description': mail['subject'],
+        'location': mail['location']
+    }
+
+    if date is not None:
+        if mail['starttime'] is None:
+            event['start']['date'] = date
+            event['start']['timeZone'] = local_zone
+            event['end']['date'] = date
+            event['end']['timeZone'] = local_zone
 
         else:
-            mail['location'] = None
-def addEvent(creds, mail, conflict_resolution = "default"):
+            event['start']['date'] = date
+            event['end']['date'] = date
+            event['start']['timeZone'] = local_zone
+            event['end']['timeZone'] = local_zone
+
+    else:
+        if mail['starttime'] is None:
+            event['start'] = {
+                'date': mail['startdate'],
+                'timeZone': local_zone
+            }
+            event['end'] = {
+                'date': mail['enddate'],
+                'timeZone': local_zone
+            }
+        else:
+            event['start'] = {
+                'dateTime': datetime.combine(mail['startdate'], mail['starttime']),
+                'timeZone': local_zone
+            }
+            event['end'] = {
+                'dateTime': datetime.combine(mail['enddate'], mail['endtime']),
+                'timeZone': local_zone
+            }
+
+    # when creating an event for a date range,
+    # we dont want the event to span from say Saturday 8 am to Sunday 10am
+    # we want it from Saturday 8am to 10am and then Sunday again from 8am to 10am
+    # this is where the recurrence flag comes in
+
+    if mail['daily']:
+        if mail['starttime'] is None:
+            event['start'] = {
+                'date': mail['startdate'],
+                'timeZone': local_zone
+            }
+            event['end'] = event['start']
+        else:
+            event['end'] = {
+                'dateTime': datetime.combine(mail['startdate'], mail['endtime']),
+                'timeZone': local_zone
+            }
+
+        no_of_days = (mail['enddate'] - mail['startdate']).days
+        event['recurrence'] = [
+            f'RRULE:FREQ=DAILY;COUNT={no_of_days}'  
+        ]
+    
+    return event
+
+def addEvent(creds, mail, conflict_resolution = 'ask_user'):
+
     try:
-        tz = datetime.now().astimezone().tzinfo
-        service = build("calendar", "v3", credentials=creds)
-        
-        # Check if we have multiple specific dates (from connected dates)
+        service = build("calendar", "v3", credentials = creds)
+        event_links = []
+
         if mail.get('all_dates') and len(mail.get('all_dates', [])) > 1:
-            # For multiple non-consecutive dates, create separate events
-            events_links = []
-            
+
             for date in mail['all_dates']:
-                event_copy = mail.copy()
-                event_copy['startdate'] = date
-                event_copy['enddate'] = date
-                event_copy['daily'] = False
-                
-                # Create individual event
-                if mail['starttime'] is None:
-                    # For all-day events
-                    event_start = datetime.combine(date, datetime.min.time()).astimezone(tz)
-                    event_end = datetime.combine(date, datetime.max.time()).astimezone(tz)
-                else:
-                    event_start = datetime.combine(date, mail['starttime']).astimezone(tz)
-                    event_end = datetime.combine(date, mail['endtime']).astimezone(tz)
-                
-                events_result = service.events().list(
-                    calendarId='primary',
-                    timeMin=event_start.isoformat(),
-                    timeMax=event_end.isoformat(),
-                    singleEvents=True,
-                    orderBy='startTime'
-                ).execute()
-                
-                conflicts = events_result.get('items', [])
-                
-                if conflicts:
-                    print(colored("[!] Conflicting events found:", 'light_red'))
 
-                    for conflict in conflicts:
-
-                        summary = conflict.get('summary', 'No Title')
-                        start = conflict['start']
-                        end = conflict['end']
-
-                        print(f"- {summary}: starts at {start} and ends at {end}")
-                    
-                    if conflict_resolution == "default":
-                        return 'conflict_action_needed'
-                    
-                    elif conflict_resolution == "keep_old":
-                        print("[=] Keeping old events. New event will not be added.")
-                        return None
-                    
-                    elif conflict_resolution == "keep_new":
-                        # Delete conflicting events.
-                        for conflict in conflicts:
-                            event_id = conflict.get('id')
-                            service.events().delete(calendarId='primary', eventId=event_id).execute()
-                    
-                        print("[-] Old conflicting events deleted. Proceeding to add new event.")
-
-                    elif conflict_resolution == "keep_both":
-                        print("[+] Adding new event alongside existing conflicting events.")
-
-                    else:
-                        print(f"[!] Invalid conflict resolution option: {conflict_resolution}. Aborting.")
-                        return None
-                
-                # Create the event for this date
-                local_zone = 'Asia/Kolkata'
-                
-                event_body = {
-                    'summary': mail['title'],
-                    'description': mail['subject'],
-                    'location': mail['location']
-                }
-                
-                if mail['starttime'] is None:
-                    event_body['start'] = {
-                        'date': date.isoformat(),
-                        'timeZone': local_zone
-                    }
-                    event_body['end'] = {
-                        'date': date.isoformat(),
-                        'timeZone': local_zone
-                    }
-                else:
-                    event_body['start'] = {
-                        'dateTime': event_start.isoformat(),
-                        'timeZone': local_zone
-                    }
-                    event_body['end'] = {
-                        'dateTime': event_end.isoformat(),
-                        'timeZone': local_zone
-                    }
-
-                # when creating an event for a date range,
-                # we dont want the event to span from say Saturday 8 am to Sunday 10am
-                # we want it from Saturday 8am to 10am and then Sunday again from 8am to 10am
-                # this is where the recurrence flag comes in
-
-                if mail['daily'] == True:
-                    # change end date and end time to a single day and then use recurrence
-                    if mail['starttime'] is None:
-
-                        event_body['start'] = {
-                            'date': mail['startdate'].isoformat(),
-                            'timeZone': local_zone
-                        }
-                        event_body['end'] = event_body['start']
-
-                    else:
-                        event_body['start'] = {
-                            'dateTime': event_start.isoformat(),
-                            'timeZone': local_zone
-                        }
-                        event_body['end'] = {
-                            'dateTime': datetime.combine(mail['startdate'], mail['endtime']).isoformat(),
-                            'timeZone': local_zone
-                        }
-
-
-                    no_of_days = (mail['enddate'] - mail['startdate']).days
-
-                    event_body['recurrence'] = [
-                        f'RRULE:FREQ=DAILY;COUNT={no_of_days}'  
-                    ]
-                
-                # Insert the event
-                event = service.events().insert(calendarId='primary', body=event_body).execute()
-                events_links.append(event.get('htmlLink'))
+                event = createEvent(mail, date)
+                insertEvent(service, event, conflict_resolution)
+        else:
+            event = createEvent(mail)
+            insertEvent(service, event)
             
-            return events_links
-        
     except HttpError as error:
         print(f"An error occurred: {error}")
 
@@ -682,30 +771,21 @@ def main():
         print("[~] Extracting date and time...")
         extractDateTime(mails)
 
-        print("[~] Extracting location...")
-        extractLocation(mails)
+        print("[~] Generating titles and location...")
+        extractTitleLocation(mails)
 
         addedEvents = []
         for mail in mails:
 
-            if mail['startdate'] or mail['starttime']:
+            if mail['starttime'] or mail['starttime']:
 
                 print("-"*80)
 
                 for key, value in mail.items():
-                    if key == 'body':
-                        continue
-                    if value:
-                        print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
+                    print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
 
                 if input("Add to calendar? [Y/n]: ") == 'n':
                     continue
-
-                # TODO: Extract event names
-                mail['title'] =    input("Enter Event Name: ")
-
-                if mail['location'] is None: 
-                    mail['location'] = input("Enter Event Location: ")
 
                 # Check and ask for startdate if None
                 if mail["startdate"] is None:
@@ -724,19 +804,9 @@ def main():
 
                 addedEvent = addEvent(creds, mail)
 
-                while addedEvent == 'conflict_action_needed':
-                    match input("1: Keep old\n2: Keep new\n3: Keep both\nOption: ").strip():
-                        case '1':
-                            addedEvent = addEvent(creds, mail, 'keep_old')
-                        case '2':
-                            addedEvent = addEvent(creds, mail, 'keep_new')
-                        case '3':
-                            addedEvent = addEvent(creds, mail, 'keep_both')
-
                 addedEvents.append(addedEvent)
 
-                if addedEvent:
-                    print(colored(f"[+] Added \"{mail['title']}\" to your calendar!", 'green'))
+                print(colored(f"[+] Added \"{mail['title']}\" to your calendar!: {addedEvent}", 'green'))
             else:
                 print(colored(f"[=] Skipped \"{mail['subject']}\"", 'green'))
 
