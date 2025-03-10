@@ -631,27 +631,27 @@ def insertEvent(service, event, conflict_resolution = 'ask_user', tz = datetime.
 
             print(f"- {summary}: starts at {start} and ends at {end}")
 
-            while conflict_resolution == 'ask_user':
-                conflict_resolution = input("1: Keep old\n2: Keep new\n3: Keep both\nOption: ").strip()
+        while conflict_resolution == 'ask_user':
+            conflict_resolution = input("1: Keep old\n2: Keep new\n3: Keep both\nOption: ").strip()
 
-                if conflict_resolution == "1":
-                    print(colored("[=] Keeping old events. New event will not be added.", 'light_green'))
-                    return None
+            if conflict_resolution == "1":
+                print(colored("[=] Keeping old events. New event will not be added.", 'light_green'))
+                return None
                         
-                elif conflict_resolution == "2":
-                    # Delete conflicting events.
-                    for conflict in conflicts:
-                        event_id = conflict.get('id')
-                        service.events().delete(calendarId='primary', eventId=event_id).execute()
+            elif conflict_resolution == "2":
+                # Delete conflicting events.
+                for conflict in conflicts:
+                    event_id = conflict.get('id')
+                    service.events().delete(calendarId='primary', eventId=event_id).execute()
                         
-                    print(colored("[-] Old conflicting events deleted. Proceeding to add new event.", 'light_green'))
+                print(colored("[-] Old conflicting events deleted. Proceeding to add new event.", 'light_green'))
 
-                elif conflict_resolution == "3":
-                    print(colored("[+] Adding new event alongside existing conflicting events.", 'light_green'))
+            elif conflict_resolution == "3":
+                print(colored("[+] Adding new event alongside existing conflicting events.", 'light_green'))
 
-                else:
-                    print(f"[!] Invalid conflict resolution option: {conflict_resolution}.")
-                    conflict_resolution = 'ask_user'
+            else:
+                print(f"[!] Invalid conflict resolution option: {conflict_resolution}.")
+                conflict_resolution = 'ask_user'    
     
     if event['start'].get('dateTime'):
         event['start']['dateTime'] = event['start']['dateTime'].isoformat()
