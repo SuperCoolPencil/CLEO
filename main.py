@@ -125,15 +125,17 @@ def getMail(creds, maxResults):
                 elif name == "Date":
                     date_format = "%a, %d %b %Y %H:%M:%S %z"
                     mail['when'] = datetime.strptime(values['value'], date_format)
+                
+            if 'parts' in msg['payload']:
 
-            parts = msg['payload']['parts']
+                parts = msg['payload']['parts']
 
-            body = getEmailBody(parts, "body").lower()
+                body = getEmailBody(parts, "body").lower()
 
-            # Doing it this way so I dont have to deal with escape characters
-            mail['body'] = body
+                # Doing it this way so I dont have to deal with escape characters
+                mail['body'] = body
 
-            mails.append(mail)
+                mails.append(mail)
 
 
         return mails   
@@ -546,7 +548,6 @@ def addEvent(creds, mail, conflict_resolution = "default"):
                     event_start = datetime.combine(date, mail['starttime']).astimezone(tz)
                     event_end = datetime.combine(date, mail['endtime']).astimezone(tz)
                 
-                # Check conflicts for this specific date
                 events_result = service.events().list(
                     calendarId='primary',
                     timeMin=event_start.isoformat(),
@@ -557,11 +558,38 @@ def addEvent(creds, mail, conflict_resolution = "default"):
                 
                 conflicts = events_result.get('items', [])
                 
-                # Handle conflicts for this specific date
                 if conflicts:
-                    # Handle conflicts as before...
-                    # (conflict resolution code)
-                    pass
+                    print(colored("[!] Conflicting events found:", 'light_red'))
+
+                    for conflict in conflicts:
+
+                        summary = conflict.get('summary', 'No Title')
+                        start = conflict['start']
+                        end = conflict['end']
+
+                        print(f"- {summary}: starts at {start} and ends at {end}")
+                    
+                    if conflict_resolution == "default":
+                        return 'conflict_action_needed'
+                    
+                    elif conflict_resolution == "keep_old":
+                        print("[=] Keeping old events. New event will not be added.")
+                        return None
+                    
+                    elif conflict_resolution == "keep_new":
+                        # Delete conflicting events.
+                        for conflict in conflicts:
+                            event_id = conflict.get('id')
+                            service.events().delete(calendarId='primary', eventId=event_id).execute()
+                    
+                        print("[-] Old conflicting events deleted. Proceeding to add new event.")
+
+                    elif conflict_resolution == "keep_both":
+                        print("[+] Adding new event alongside existing conflicting events.")
+
+                    else:
+                        print(f"[!] Invalid conflict resolution option: {conflict_resolution}. Aborting.")
+                        return None
                 
                 # Create the event for this date
                 local_zone = 'Asia/Kolkata'
@@ -590,6 +618,38 @@ def addEvent(creds, mail, conflict_resolution = "default"):
                         'dateTime': event_end.isoformat(),
                         'timeZone': local_zone
                     }
+
+                # when creating an event for a date range,
+                # we dont want the event to span from say Saturday 8 am to Sunday 10am
+                # we want it from Saturday 8am to 10am and then Sunday again from 8am to 10am
+                # this is where the recurrence flag comes in
+
+                if mail['daily'] == True:
+                    # change end date and end time to a single day and then use recurrence
+                    if mail['starttime'] is None:
+
+                        event_body['start'] = {
+                            'date': mail['startdate'].isoformat(),
+                            'timeZone': local_zone
+                        }
+                        event_body['end'] = event_body['start']
+
+                    else:
+                        event_body['start'] = {
+                            'dateTime': event_start.isoformat(),
+                            'timeZone': local_zone
+                        }
+                        event_body['end'] = {
+                            'dateTime': datetime.combine(mail['startdate'], mail['endtime']).isoformat(),
+                            'timeZone': local_zone
+                        }
+
+
+                    no_of_days = (mail['enddate'] - mail['startdate']).days
+
+                    event_body['recurrence'] = [
+                        f'RRULE:FREQ=DAILY;COUNT={no_of_days}'  
+                    ]
                 
                 # Insert the event
                 event = service.events().insert(calendarId='primary', body=event_body).execute()
@@ -633,6 +693,8 @@ def main():
                 print("-"*80)
 
                 for key, value in mail.items():
+                    if key == 'body':
+                        continue
                     if value:
                         print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
 
