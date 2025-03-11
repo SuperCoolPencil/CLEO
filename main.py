@@ -139,14 +139,13 @@ def getMail(creds, maxResults):
                 mail['body'] = body
 
                 mails.append(mail)
-                '''
+                
                 # Mark email as read by removing the UNREAD label
                 service.users().messages().modify(
                     userId="me",
                     id=message['id'],
                     body={'removeLabelIds': ['UNREAD']}
                 ).execute()
-                '''
 
         return mails   
 
