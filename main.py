@@ -1,5 +1,6 @@
 import os.path
 import base64
+from time import sleep
 from bs4 import BeautifulSoup
 import dateparser
 from google.auth.transport.requests import Request
@@ -26,7 +27,7 @@ print('''
 ''')
 
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar"
 ]
 
@@ -46,7 +47,6 @@ def authenticate():
         
         else:
 
-            # TODO: Think of a way to eliminate credentials.json
             flow = InstalledAppFlow.from_client_secrets_file(
                 "credentials.json", SCOPES
             )
@@ -61,8 +61,7 @@ def authenticate():
 def dtparse(str: str, context_time = None):
 
     settings = {
-        'DATE_ORDER': 'DMY',
-        'PREFER_DATES_FROM': 'future'
+        'DATE_ORDER': 'DMY'
     }
 
     if context_time:
@@ -101,9 +100,11 @@ def getMail(creds, maxResults):
 
     try:
         service = build("gmail", "v1", credentials=creds)
-
-        # TODO: Decide how many emails to fetch or what conditions they must satisfy
-        results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], maxResults = maxResults).execute()
+        try:
+            results = service.users().messages().list(userId = "me", labelIds = ['INBOX'], maxResults = maxResults, q='is:unread newer_than:2d').execute()
+        except Exception as e:
+            print(f"[!] Error occurred while fetching mail: {e}")
+            return []
 
         messages = results.get('messages', [])
 
@@ -138,7 +139,14 @@ def getMail(creds, maxResults):
                 mail['body'] = body
 
                 mails.append(mail)
-
+                '''
+                # Mark email as read by removing the UNREAD label
+                service.users().messages().modify(
+                    userId="me",
+                    id=message['id'],
+                    body={'removeLabelIds': ['UNREAD']}
+                ).execute()
+                '''
 
         return mails   
 
@@ -279,7 +287,6 @@ def parseExplicitDate(text: str, context_time):
     for result in results:
         # remove any whitespace and surrounding characters
         result = result.strip()
-
         result = datetime.date(dtparse(result, context_time))
         if result:
             parsed_results.append(result)
@@ -515,7 +522,7 @@ def extractDateTime(mails):
             datetime_info['endtime'] = times[-1] if len(times) > 1 else None
 
         fixDateTime(datetime_info, context_time)
-        
+
         for key, value in datetime_info.items():
             mail[key] = value
 
@@ -544,13 +551,13 @@ def generateTitleLocation(mail):
         api_key = api_key
     )
 
-    model = "gemini-2.0-flash"
+    model = "gemini-2.0-flash-lite"
     contents = [
         types.Content(
             role="user",
             parts=[
                 types.Part.from_text(text=f"""Extract event details from the following text. Your task is to:
-                                                Generate the event title.
+                                                Generate the event title (Be as specific as possible).
                                                 Determine the event location.
 
                                                 Respond with only one line in the following format:
@@ -624,20 +631,19 @@ def insertEvent(service, event, conflict_resolution = 'ask_user', tz = datetime.
         print(colored("[!] Conflicting events found:", 'light_red'))
 
         for conflict in conflicts:
-
+            
             summary = conflict.get('summary', 'No Title')
             start = conflict['start']
             end = conflict['end']
 
             print(f"- {summary}: starts at {start} and ends at {end}")
 
-        while conflict_resolution == 'ask_user':
-            conflict_resolution = input("1: Keep old\n2: Keep new\n3: Keep both\nOption: ").strip()
+        while True:
 
             if conflict_resolution == "1":
                 print(colored("[=] Keeping old events. New event will not be added.", 'light_green'))
                 return None
-                        
+            
             elif conflict_resolution == "2":
                 # Delete conflicting events.
                 for conflict in conflicts:
@@ -645,20 +651,30 @@ def insertEvent(service, event, conflict_resolution = 'ask_user', tz = datetime.
                     service.events().delete(calendarId='primary', eventId=event_id).execute()
                         
                 print(colored("[-] Old conflicting events deleted. Proceeding to add new event.", 'light_green'))
-
+                break
+            
             elif conflict_resolution == "3":
                 print(colored("[+] Adding new event alongside existing conflicting events.", 'light_green'))
-
+                break
+            
             else:
-                print(f"[!] Invalid conflict resolution option: {conflict_resolution}.")
-                conflict_resolution = 'ask_user'    
+                conflict_resolution = input("1: Keep old\n2: Keep new\n3: Keep both\nOption: ").strip()
     
     if event['start'].get('dateTime'):
-        event['start']['dateTime'] = event['start']['dateTime'].isoformat()
-        event['end']['dateTime'] = event['end']['dateTime'].isoformat()
+        try:
+            event['start']['dateTime'] = event['start']['dateTime'].isoformat()
+            event['end']['dateTime'] = event['end']['dateTime'].isoformat()
+        except:
+            event['start']['dateTime'] = event['start']['dateTime']
+            event['end']['dateTime'] = event['end']['dateTime']
     else:
-        event['start']['date'] = event['start']['date'].isoformat()
-        event['end']['date'] = event['end']['date'].isoformat()
+        try:
+            event['start']['date'] = event['start']['date'].isoformat()
+            event['end']['date'] = event['end']['date'].isoformat()
+        except:
+            # SOMETIMES THESE DECIDE TO IDENTIFY AS A STRING... I DO NOT KNOW WHY!!!!!!!!!!!!
+            event['start']['date'] = event['start']['date']
+            event['start']['date'] = event['start']['date']
 
     event = service.events().insert(calendarId='primary', body=event).execute()
 
@@ -673,6 +689,9 @@ def createEvent(mail, date = None, local_zone = 'Asia/Kolkata'):
     }
 
     if date is not None:
+        event['start'] = {}
+        event['end'] = {}
+
         if mail['starttime'] is None:
             event['start']['date'] = date
             event['start']['timeZone'] = local_zone
@@ -680,8 +699,8 @@ def createEvent(mail, date = None, local_zone = 'Asia/Kolkata'):
             event['end']['timeZone'] = local_zone
 
         else:
-            event['start']['date'] = date
-            event['end']['date'] = date
+            event['start']['dateTime'] = datetime.combine(date, event['starttime'])
+            event['end']['date']       = datetime.combine(date, event['endtime'])
             event['start']['timeZone'] = local_zone
             event['end']['timeZone'] = local_zone
 
@@ -741,17 +760,25 @@ def addEvent(creds, mail, conflict_resolution = 'ask_user'):
             for date in mail['all_dates']:
 
                 event = createEvent(mail, date)
-                insertEvent(service, event, conflict_resolution)
+                event_links.append(insertEvent(service, event, conflict_resolution))
         else:
             event = createEvent(mail)
-            insertEvent(service, event)
+            event_links.append(insertEvent(service, event, conflict_resolution))
+        
+        return event_links
             
     except HttpError as error:
         print(f"An error occurred: {error}")
 
+def wait(seconds):
+    print(f'[o] Waiting for {seconds} seconds...')
+    sleep(seconds)
+
 def main():
     
     maxResults = sys.argv[1] if len(sys.argv) > 1 else 5
+    auto = (sys.argv[2] == '--auto' or sys.argv[2] == '-a') if len(sys.argv) > 2 else False
+    sec = sys.argv[3] if len(sys.argv) > 3 else 600 # every 10 minutes
 
     creds = authenticate()
 
@@ -762,9 +789,11 @@ def main():
 
         mails = getMail(creds, maxResults)
 
-        if len(mails) == 0:
+        if not mails or len(mails) == 0:
             print("[!] No mails fit current criteria")
-            return
+            if auto:
+                wait(sec)
+                main()
         
         print("[~] Pulled mail from Gmail API!")
 
@@ -777,38 +806,56 @@ def main():
         addedEvents = []
         for mail in mails:
 
-            if mail['starttime'] or mail['starttime']:
+            if mail['startdate'] or mail['starttime']:
 
                 print("-"*80)
 
                 for key, value in mail.items():
                     print("{}: {}".format(colored(key, 'cyan'), colored(value, 'yellow')))
 
-                if input("Add to calendar? [Y/n]: ") == 'n':
-                    continue
-
-                # Check and ask for startdate if None
+                if not auto:
+                    if input("Add to calendar? [Y/n]: ") == 'n':
+                        continue
                 if mail["startdate"] is None:
-                    mail["startdate"] = datetime.date(dtparse(input("Enter start-date: "), mail['when']))
-                    mail['enddate']   = datetime.date(dtparse(input("Enter end-date: ")  , mail['when']))
+                    if not auto:
+                        mail["startdate"] = datetime.date(dtparse(input("Enter start-date: "), mail['when']))
+                        mail['enddate']   = datetime.date(dtparse(input("Enter end-date: ")  , mail['when']))
+                    else:
+                        continue
 
-                # Check and ask for starttime if None
+                    # Check and ask for starttime if None
                 if mail["starttime"] is None:
-                    print("-1 for a all day event")
-                    starttime = input("Enter start-time: ").strip()
+                    if auto:
+                        print("Assuming a all day event")
+                        starttime = '-1'
+                    else:
+                        print("Enter -1 for a all day event")
+                        starttime = input("Enter starttime: ")
+
                     if starttime == '-1':
                         pass
                     else:
                         mail["starttime"] = datetime.time(dtparse(starttime                , mail['when']))
                         mail['endtime']   = datetime.time(dtparse(input("Enter end-time: "), mail['when']))
 
-                addedEvent = addEvent(creds, mail)
+                if auto:
+                    # Keep both events
+                    conflict_resolution = '3'
+                else:
+                    conflict_resolution = 'ask_user'
 
-                addedEvents.append(addedEvent)
+                addedEvent = addEvent(creds, mail, conflict_resolution = conflict_resolution)
 
-                print(colored(f"[+] Added \"{mail['title']}\" to your calendar!", 'light_green'))
+                addedEvents.extend(addedEvent)
+                
+                if addedEvent:
+                    print(colored(f"[+] Added \"{mail['title']}\" to your calendar!", 'light_green'))
             else:
                 print(colored(f"[=] Skipped \"{mail['subject']}\"", 'light_green'))
+    
+        if auto:
+            wait(sec)
+            main()
 
 if __name__ == '__main__':
     main()
